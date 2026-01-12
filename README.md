@@ -16,11 +16,11 @@ claude-fork --model sonnet     # Fork with specific model
 
 ```bash
 # Clone and add to PATH
-git clone https://github.com/YOUR_USERNAME/claude-fork-picker.git
+git clone https://github.com/Elijas/claude-fork-picker.git
 export PATH="$PATH:$PWD/claude-fork-picker"
 
 # Or just copy the script
-curl -O https://raw.githubusercontent.com/YOUR_USERNAME/claude-fork-picker/main/claude-fork
+curl -O https://raw.githubusercontent.com/Elijas/claude-fork-picker/main/claude-fork
 chmod +x claude-fork
 ```
 
