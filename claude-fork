@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# claude-fork: TUI to select and fork a Claude Code session
+#
+# Workaround for --fork-session being ignored with the TUI session picker
+# Bug: https://github.com/anthropics/claude-code/issues/15694
+#
+# Usage: claude-fork [CLAUDE_ARGS...]
+#
+# Examples:
+#   claude-fork                    # Fork a session in current directory
+#   claude-fork --model sonnet     # Fork with specific model
+#
+# Requirements: fzf, python3
+
+set -euo pipefail
+
+# Encode current cwd to match Claude's session path format
+# /Users/user/Development/_foo -> -Users-user-Development--foo
+encode_path() {
+    echo "$1" | sed 's|/|-|g; s|_|-|g'
+}
+
+CWD_ENCODED=$(encode_path "$PWD")
+SESSIONS_DIR="$HOME/.claude/projects"
+
+# Find the project directory for current cwd
+PROJECT_DIR=""
+for dir in "$SESSIONS_DIR"/*; do
+    [[ -d "$dir" ]] || continue
+    dir_name=$(basename "$dir")
+    if [[ "$dir_name" == "$CWD_ENCODED" ]]; then
+        PROJECT_DIR="$dir"
+        break
+    fi
+done
+
+if [[ -z "$PROJECT_DIR" ]]; then
+    echo "No sessions found for current directory: $PWD" >&2
+    exit 1
+fi
+
+# List session files by mtime (newest first), excluding agent sessions
+sessions=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.jsonl" -type f ! -name "agent-*" -print0 2>/dev/null \
+    | xargs -0 ls -t 2>/dev/null)
+
+if [[ -z "$sessions" ]]; then
+    echo "No sessions found in: $PROJECT_DIR" >&2
+    exit 1
+fi
+
+# Preview function (called by fzf --preview)
+preview_session() {
+    local uuid="$1"
+    local project_dir="$2"
+    local session_file="$project_dir/$uuid.jsonl"
+
+    [[ ! -f "$session_file" ]] && echo "Session file not found" && return 0
+
+    python3 -c '
+import sys, json
+
+session_file = sys.argv[1]
+messages = []  # (sort_ts, display_ts, role, content)
+
+with open(session_file, "r", errors="replace") as f:
+    for line in f:
+        try:
+            d = json.loads(line)
+            msg_type = d.get("type", "")
+            sort_ts = d.get("timestamp", "")[:19]
+            display_ts = d.get("timestamp", "")[:16].replace("T", " ")
+
+            if msg_type == "user":
+                msg = d.get("message", {})
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    continue
+                if content:
+                    messages.append((sort_ts, display_ts, "user", content))
+
+            elif msg_type == "assistant":
+                msg = d.get("message", {})
+                content = msg.get("content", [])
+                text_parts = []
+                for part in content if isinstance(content, list) else []:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                if text_parts:
+                    messages.append((sort_ts, display_ts, "ai", "\n".join(text_parts)))
+        except:
+            pass
+
+messages.sort(key=lambda x: x[0])
+
+def truncate_msg(content):
+    lines = content.strip().split("\n")
+    if len(lines) <= 8:
+        return content.strip()
+    return "\n".join(lines[:3]) + "\n  ...\n" + "\n".join(lines[-3:])
+
+for sort_ts, display_ts, role, content in reversed(messages[-15:]):
+    if role == "ai":
+        print(f"\033[33m{display_ts} AI\033[0m")
+    else:
+        print(f"\033[36m{display_ts}\033[0m")
+    print(truncate_msg(content))
+    print()
+' "$session_file"
+}
+
+# Export for fzf preview subprocess
+export -f preview_session
+export PROJECT_DIR
+
+# Format sessions for fzf: uuid|searchable_msgs|[ago] display
+format_sessions() {
+    export LC_ALL=C
+
+    while read -r f; do
+        [[ -z "$f" ]] && continue
+        uuid=$(basename "$f" .jsonl)
+
+        read -r last_ts msg_count interleaved < <(python3 -c '
+import sys, json
+
+f = sys.argv[1]
+messages = []
+last_ts = ""
+count = 0
+
+with open(f, "r", errors="replace") as fp:
+    for line in fp:
+        try:
+            d = json.loads(line)
+            msg_type = d.get("type", "")
+            ts = d.get("timestamp", "")[:19]
+
+            if msg_type == "user":
+                msg = d.get("message", {})
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    continue
+                if content:
+                    count += 1
+                    last_ts = ts[:16]
+                    messages.append((ts, " ".join(content.split())))
+
+            elif msg_type == "assistant":
+                msg = d.get("message", {})
+                content = msg.get("content", [])
+                text_parts = []
+                for part in content if isinstance(content, list) else []:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                if text_parts:
+                    last_ts = ts[:16]
+                    messages.append((ts, " ".join("\n".join(text_parts).split())))
+        except:
+            pass
+
+messages.sort(key=lambda x: x[0])
+recent = [m[1] for m in messages[-15:]]
+interleaved = " /// ".join(reversed(recent)).replace("|", "¦")
+print(f"{last_ts} {count} {interleaved}")
+' "$f" 2>/dev/null)
+
+        [[ "${msg_count:-0}" -eq 0 ]] && continue
+
+        # Calculate time ago
+        local last_epoch=$(date -j -f "%Y-%m-%dT%H:%M" "$last_ts" "+%s" 2>/dev/null || echo 0)
+        local now=$(date +%s)
+        local ago=$((now - last_epoch))
+
+        local ago_fmt
+        if [[ $ago -lt 60 ]]; then
+            ago_fmt="${ago}s"
+        elif [[ $ago -lt 3600 ]]; then
+            ago_fmt="$((ago / 60))m"
+        elif [[ $ago -lt 86400 ]]; then
+            local h=$((ago / 3600))
+            local m=$(((ago % 3600) / 60))
+            [[ $m -gt 0 ]] && ago_fmt="${h}h ${m}m" || ago_fmt="${h}h"
+        else
+            local d=$((ago / 86400))
+            local h=$(((ago % 86400) / 3600))
+            [[ $h -gt 0 ]] && ago_fmt="${d}d ${h}h" || ago_fmt="${d}d"
+        fi
+
+        local display_msg="${interleaved:0:90}"
+        [[ ${#interleaved} -gt 90 ]] && display_msg="${display_msg}..."
+
+        printf "%s|%s|%s|[%7s] %s\n" \
+            "$last_ts" "$uuid" "$interleaved" "$ago_fmt" "$display_msg"
+    done | sort -t'|' -k1 -r | cut -d'|' -f2-
+}
+
+HEADER="FORK session (cwd: ${PWD##*/})"
+
+selected=$(echo "$sessions" | format_sessions | \
+    fzf --height=80% --reverse --exact --no-mouse \
+        --header="$HEADER" \
+        --delimiter='|' \
+        --with-nth=3.. \
+        --preview="bash -c 'preview_session {1} \"$PROJECT_DIR\"'" \
+        --preview-window=right:50%:wrap \
+)
+
+if [[ -n "$selected" ]]; then
+    uuid=$(echo "$selected" | cut -d'|' -f1)
+    echo "Forking session: $uuid"
+    exec claude --fork-session --resume "$uuid" "$@"
+fi
