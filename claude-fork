@@ -11,53 +11,16 @@
 
 set -euo pipefail
 
-# Encode current cwd to match Claude's session path format
-# /Users/user/Development/_foo -> -Users-user-Development--foo
-encode_path() {
-    echo "$1" | sed 's|/|-|g; s|_|-|g'
-}
-
-CWD_ENCODED=$(encode_path "$PWD")
-SESSIONS_DIR="$HOME/.claude/projects"
-
-# Find the project directory for current cwd
-PROJECT_DIR=""
-for dir in "$SESSIONS_DIR"/*; do
-    [[ -d "$dir" ]] || continue
-    dir_name=$(basename "$dir")
-    if [[ "$dir_name" == "$CWD_ENCODED" ]]; then
-        PROJECT_DIR="$dir"
-        break
-    fi
-done
-
-if [[ -z "$PROJECT_DIR" ]]; then
-    echo "No sessions found for current directory: $PWD" >&2
-    exit 1
-fi
-
-# List session files by mtime (newest first), excluding agent sessions
-sessions=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.jsonl" -type f ! -name "agent-*" -print0 2>/dev/null \
-    | xargs -0 ls -t 2>/dev/null)
-
-if [[ -z "$sessions" ]]; then
-    echo "No sessions found in: $PROJECT_DIR" >&2
-    exit 1
-fi
-
-# Preview function (called by fzf --preview)
-preview_session() {
-    local uuid="$1"
-    local project_dir="$2"
-    local session_file="$project_dir/$uuid.jsonl"
-
-    [[ ! -f "$session_file" ]] && echo "Session file not found" && return 0
+# Internal: preview mode (called by fzf)
+if [[ "${1:-}" == "--preview" ]]; then
+    session_file="$2"
+    [[ ! -f "$session_file" ]] && echo "Session file not found" && exit 0
 
     python3 -c '
 import sys, json
 
 session_file = sys.argv[1]
-messages = []  # (sort_ts, display_ts, role, content)
+messages = []
 
 with open(session_file, "r", errors="replace") as f:
     for line in f:
@@ -103,11 +66,41 @@ for sort_ts, display_ts, role, content in reversed(messages[-15:]):
     print(truncate_msg(content))
     print()
 ' "$session_file"
+    exit 0
+fi
+
+# Encode current cwd to match Claude's session path format
+encode_path() {
+    echo "$1" | sed 's|/|-|g; s|_|-|g'
 }
 
-# Export for fzf preview subprocess
-export -f preview_session
-export PROJECT_DIR
+CWD_ENCODED=$(encode_path "$PWD")
+SESSIONS_DIR="$HOME/.claude/projects"
+
+# Find the project directory for current cwd
+PROJECT_DIR=""
+for dir in "$SESSIONS_DIR"/*; do
+    [[ -d "$dir" ]] || continue
+    dir_name=$(basename "$dir")
+    if [[ "$dir_name" == "$CWD_ENCODED" ]]; then
+        PROJECT_DIR="$dir"
+        break
+    fi
+done
+
+if [[ -z "$PROJECT_DIR" ]]; then
+    echo "No sessions found for current directory: $PWD" >&2
+    exit 1
+fi
+
+# List session files by mtime (newest first), excluding agent sessions
+sessions=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.jsonl" -type f ! -name "agent-*" -print0 2>/dev/null \
+    | xargs -0 ls -t 2>/dev/null)
+
+if [[ -z "$sessions" ]]; then
+    echo "No sessions found in: $PROJECT_DIR" >&2
+    exit 1
+fi
 
 # Format sessions for fzf: uuid|searchable_msgs|[ago] display
 format_sessions() {
@@ -192,13 +185,14 @@ print(f"{last_ts} {count} {interleaved}")
 }
 
 HEADER="FORK session (cwd: ${PWD##*/})"
+SCRIPT_PATH="$(realpath "$0")"
 
 selected=$(echo "$sessions" | format_sessions | \
     fzf --height=80% --reverse --exact --no-mouse \
         --header="$HEADER" \
         --delimiter='|' \
         --with-nth=3.. \
-        --preview="bash -c 'preview_session {1} \"$PROJECT_DIR\"'" \
+        --preview="$SCRIPT_PATH --preview '$PROJECT_DIR/{1}.jsonl'" \
         --preview-window=right:50%:wrap \
 )
 
