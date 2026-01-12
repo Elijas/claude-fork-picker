@@ -71,7 +71,7 @@ fi
 
 # Encode current cwd to match Claude's session path format
 encode_path() {
-    echo "$1" | sed 's|/|-|g; s|_|-|g'
+    echo "$1" | sed 's|/|-|g; s|_|-|g; s| |-|g'
 }
 
 CWD_ENCODED=$(encode_path "$PWD")
