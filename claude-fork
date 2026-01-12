@@ -121,12 +121,13 @@ format_sessions() {
         [[ -z "$f" ]] && continue
         uuid=$(basename "$f" .jsonl)
 
-        read -r last_ts msg_count interleaved < <(python3 -c '
+        read -r last_epoch msg_count interleaved < <(python3 -c '
 import sys, json
+from datetime import datetime
 
 f = sys.argv[1]
 messages = []
-last_ts = ""
+last_epoch = 0
 count = 0
 
 with open(f, "r", errors="replace") as fp:
@@ -134,7 +135,7 @@ with open(f, "r", errors="replace") as fp:
         try:
             d = json.loads(line)
             msg_type = d.get("type", "")
-            ts = d.get("timestamp", "")[:19]
+            ts = d.get("timestamp", "")
 
             if msg_type == "user":
                 msg = d.get("message", {})
@@ -143,8 +144,12 @@ with open(f, "r", errors="replace") as fp:
                     continue
                 if content:
                     count += 1
-                    last_ts = ts[:16]
-                    messages.append((ts, " ".join(content.split())))
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        last_epoch = int(dt.timestamp())
+                    except:
+                        pass
+                    messages.append((ts[:19], " ".join(content.split())))
 
             elif msg_type == "assistant":
                 msg = d.get("message", {})
@@ -154,21 +159,24 @@ with open(f, "r", errors="replace") as fp:
                     if isinstance(part, dict) and part.get("type") == "text":
                         text_parts.append(part.get("text", ""))
                 if text_parts:
-                    last_ts = ts[:16]
-                    messages.append((ts, " ".join("\n".join(text_parts).split())))
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        last_epoch = int(dt.timestamp())
+                    except:
+                        pass
+                    messages.append((ts[:19], " ".join("\n".join(text_parts).split())))
         except:
             pass
 
 messages.sort(key=lambda x: x[0])
 recent = [m[1] for m in messages[-15:]]
 interleaved = " /// ".join(reversed(recent)).replace("|", "¦")
-print(f"{last_ts} {count} {interleaved}")
+print(f"{last_epoch} {count} {interleaved}")
 ' "$f" 2>/dev/null)
 
         [[ "${msg_count:-0}" -eq 0 ]] && continue
 
-        # Calculate time ago
-        local last_epoch=$(date -j -f "%Y-%m-%dT%H:%M" "$last_ts" "+%s" 2>/dev/null || echo 0)
+        # Calculate time ago (last_epoch already in seconds from Python)
         local now=$(date +%s)
         local ago=$((now - last_epoch))
 
@@ -191,8 +199,8 @@ print(f"{last_ts} {count} {interleaved}")
         [[ ${#interleaved} -gt 90 ]] && display_msg="${display_msg}..."
 
         printf "%s|%s|%s|[%7s] %s\n" \
-            "$last_ts" "$uuid" "$interleaved" "$ago_fmt" "$display_msg"
-    done | sort -t'|' -k1 -r | cut -d'|' -f2-
+            "$last_epoch" "$uuid" "$interleaved" "$ago_fmt" "$display_msg"
+    done | sort -t'|' -k1 -nr | cut -d'|' -f2-
 }
 
 HEADER="FORK session (cwd: ${PWD##*/})"
