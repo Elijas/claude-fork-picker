@@ -2,8 +2,10 @@
 
 TUI picker to fork Claude Code sessions from the current directory.
 
-Workaround for `--fork-session` being ignored when using the built-in session picker.
-Bug: https://github.com/anthropics/claude-code/issues/15694
+Better UX than the built-in session picker:
+- **Searchable** - fuzzy search through recent messages
+- **Preview pane** - see conversation history before selecting
+- **Sorted by recency** - most recent sessions at the top
 
 ## Usage
 

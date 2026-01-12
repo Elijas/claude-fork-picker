@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # claude-fork: TUI to select and fork a Claude Code session
 #
-# Workaround for --fork-session being ignored with the TUI session picker
-# Bug: https://github.com/anthropics/claude-code/issues/15694
-#
 # Usage: claude-fork [CLAUDE_ARGS...]
 #
 # Examples:
